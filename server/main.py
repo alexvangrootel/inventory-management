@@ -210,7 +210,13 @@ def get_dashboard_summary(
 @app.get("/api/spending/summary")
 def get_spending_summary():
     """Get spending summary statistics"""
-    return spending_summary
+    totals = {
+        "total_procurement_cost": sum(m.get("procurement", 0) for m in monthly_spending),
+        "total_operational_cost": sum(m.get("operational", 0) for m in monthly_spending),
+        "total_labor_cost": sum(m.get("labor", 0) for m in monthly_spending),
+        "total_overhead": sum(m.get("overhead", 0) for m in monthly_spending),
+    }
+    return {**spending_summary, **totals}
 
 @app.get("/api/spending/monthly")
 def get_monthly_spending():
