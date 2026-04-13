@@ -210,7 +210,7 @@
                   </td>
                   <td>
                     <button
-                      v-if="!item.purchase_order_id"
+                      v-if="!item.has_purchase_order"
                       @click.stop="openPOModal(item)"
                       class="po-button create"
                     >
@@ -666,6 +666,7 @@ export default {
       // Update the backlog item with the new PO ID
       const item = allBacklogItems.value.find(b => b.id === poData.backlog_item_id)
       if (item) {
+        item.has_purchase_order = true
         item.purchase_order_id = poData.id
         item.purchase_order = poData
       }
