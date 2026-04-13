@@ -2,7 +2,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
+from datetime import datetime, timedelta
 from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+
+RESTOCK_LEAD_TIME_DAYS = 14
+submitted_restock_orders: list = []
 
 app = FastAPI(title="Factory Inventory Management System")
 
@@ -120,6 +124,29 @@ class CreatePurchaseOrderRequest(BaseModel):
     expected_delivery_date: str
     notes: Optional[str] = None
 
+class RestockOrderItem(BaseModel):
+    sku: str
+    name: str
+    category: Optional[str] = None
+    warehouse: Optional[str] = None
+    quantity: int
+    unit_cost: float
+
+class SubmittedRestockOrder(BaseModel):
+    id: str
+    order_number: str
+    items: List[RestockOrderItem]
+    total_value: float
+    budget: float
+    submitted_at: str
+    expected_delivery: str
+    lead_time_days: int
+    status: str
+
+class CreateRestockOrderRequest(BaseModel):
+    budget: float
+    items: List[RestockOrderItem]
+
 # API endpoints
 @app.get("/")
 def root():
@@ -210,7 +237,13 @@ def get_dashboard_summary(
 @app.get("/api/spending/summary")
 def get_spending_summary():
     """Get spending summary statistics"""
-    return spending_summary
+    totals = {
+        "total_procurement_cost": sum(m.get("procurement", 0) for m in monthly_spending),
+        "total_operational_cost": sum(m.get("operational", 0) for m in monthly_spending),
+        "total_labor_cost": sum(m.get("labor", 0) for m in monthly_spending),
+        "total_overhead": sum(m.get("overhead", 0) for m in monthly_spending),
+    }
+    return {**spending_summary, **totals}
 
 @app.get("/api/spending/monthly")
 def get_monthly_spending():
@@ -303,6 +336,106 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/restock-recommendations")
+def get_restock_recommendations(budget: float, warehouse: Optional[str] = None, category: Optional[str] = None):
+    if budget < 0:
+        raise HTTPException(status_code=400, detail="Budget must be non-negative")
+
+    inventory_by_sku = {item.get('sku'): item for item in inventory_items}
+
+    candidates = []
+    for forecast in demand_forecasts:
+        sku = forecast.get('item_sku') or forecast.get('sku')
+        if not sku:
+            continue
+        inv = inventory_by_sku.get(sku) or {}
+
+        item_category = inv.get('category') or forecast.get('category') or 'General'
+        item_warehouse = inv.get('warehouse') or forecast.get('warehouse') or 'Main'
+        if warehouse and item_warehouse != warehouse:
+            continue
+        if category and item_category != category:
+            continue
+
+        current_stock = inv.get('quantity_on_hand', forecast.get('current_demand', 0))
+        forecasted = forecast.get('forecasted_demand', 0)
+        gap = max(0, forecasted - current_stock)
+        if gap <= 0:
+            continue
+
+        unit_cost = inv.get('unit_cost') or 75.0
+        candidates.append({
+            'sku': sku,
+            'name': inv.get('name') or forecast.get('item_name') or sku,
+            'category': item_category,
+            'warehouse': item_warehouse,
+            'current_stock': current_stock,
+            'forecasted_demand': forecasted,
+            'gap': gap,
+            'unit_cost': round(unit_cost, 2),
+        })
+
+    candidates.sort(key=lambda c: c['gap'], reverse=True)
+
+    recommendations = []
+    remaining = budget
+    total_cost = 0.0
+    for c in candidates:
+        max_qty_by_budget = int(remaining // c['unit_cost']) if c['unit_cost'] > 0 else 0
+        qty = min(c['gap'], max_qty_by_budget)
+        if qty <= 0:
+            continue
+        line_cost = qty * c['unit_cost']
+        recommendations.append({
+            **c,
+            'recommended_quantity': qty,
+            'line_cost': round(line_cost, 2),
+        })
+        remaining -= line_cost
+        total_cost += line_cost
+        if remaining < min((x['unit_cost'] for x in candidates if x['unit_cost'] > 0), default=0):
+            break
+
+    return {
+        'budget': budget,
+        'total_cost': round(total_cost, 2),
+        'remaining_budget': round(remaining, 2),
+        'item_count': len(recommendations),
+        'recommendations': recommendations,
+    }
+
+
+@app.get("/api/restock-orders", response_model=List[SubmittedRestockOrder])
+def get_restock_orders():
+    return submitted_restock_orders
+
+
+@app.post("/api/restock-orders", response_model=SubmittedRestockOrder)
+def submit_restock_order(request: CreateRestockOrderRequest):
+    if not request.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+
+    total_value = sum(item.quantity * item.unit_cost for item in request.items)
+    now = datetime.now()
+    order_id = f"RO-{now.strftime('%Y%m%d%H%M%S')}-{len(submitted_restock_orders) + 1:03d}"
+    order_number = f"RO-{1000 + len(submitted_restock_orders) + 1}"
+    expected_delivery = (now + timedelta(days=RESTOCK_LEAD_TIME_DAYS)).strftime('%Y-%m-%d')
+
+    order = {
+        'id': order_id,
+        'order_number': order_number,
+        'items': [item.model_dump() for item in request.items],
+        'total_value': round(total_value, 2),
+        'budget': request.budget,
+        'submitted_at': now.isoformat(),
+        'expected_delivery': expected_delivery,
+        'lead_time_days': RESTOCK_LEAD_TIME_DAYS,
+        'status': 'Submitted',
+    }
+    submitted_restock_orders.append(order)
+    return order
+
 
 if __name__ == "__main__":
     import uvicorn
