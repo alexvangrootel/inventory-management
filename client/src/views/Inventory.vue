@@ -62,7 +62,7 @@
                 <td>{{ item.reorder_point }}</td>
                 <td>{{ formatCurrencyWithDecimals(item.unit_cost, currentCurrency, 2) }}</td>
                 <td><strong>{{ formatCurrencyWithDecimals(item.quantity_on_hand * item.unit_cost, currentCurrency, 2) }}</strong></td>
-                <td>{{ translateWarehouse(item.location) }}</td>
+                <td>{{ item.location }}</td>
                 <td>
                   <span :class="['badge', getStockStatusClass(item)]">
                     {{ getStockStatus(item) }}
